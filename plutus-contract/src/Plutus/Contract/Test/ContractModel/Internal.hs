@@ -186,7 +186,7 @@ import Data.Aeson qualified as JSON
 import Data.Data
 import Data.Foldable
 import Data.IORef
-import Data.List
+import Data.List as List
 import Data.Map (Map)
 import Data.Map qualified as Map
 import Data.Maybe
@@ -195,8 +195,9 @@ import Data.Row.Records (labels')
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
+import Ledger.Params ()
+import Plutus.V1.Ledger.Ada qualified as Ada
 
-import Ledger.Ada qualified as Ada
 import Ledger.Index
 import Ledger.Slot
 import Ledger.Value (AssetClass)
@@ -219,6 +220,7 @@ import Test.QuickCheck.StateModel hiding (Action, Actions (..), actionName, arbi
                                    nextState, pattern Actions, perform, precondition, shrinkAction, stateAfter)
 import Test.QuickCheck.StateModel qualified as StateModel
 
+import Plutus.Contract.Test.ContractModel.MissingLovelace (calculateDelta)
 import Test.QuickCheck hiding (ShrinkState, checkCoverage, getSize, (.&&.), (.||.))
 import Test.QuickCheck qualified as QC
 import Test.QuickCheck.Monadic (PropertyM, monadic)
@@ -1609,7 +1611,7 @@ checkBalances s envOuter = Map.foldrWithKey (\ w sval p -> walletFundsChange w s
     walletFundsChange w sval = TracePredicate $
       -- see Note [The Env contract]
       flip postMapM ((,) <$> Folds.instanceOutcome @() (toContract getEnvContract) envContractInstanceTag
-                         <*> L.generalize ((,) <$> Folds.walletFunds w <*> Folds.walletFees w)) $ \(outcome, (finalValue', fees)) -> do
+                         <*> L.generalize ((,,,) <$> Folds.walletFunds w <*> Folds.walletFees w <*> Folds.walletsAdjustedTxEvents <*> Folds.walletAdjustedTxEvents w)) $ \(outcome, (finalValue', fees, txOutCosts, walletTxOutCosts)) -> do
         dist <- Freer.ask @InitialDistribution
         case outcome of
           Done envInner -> do
@@ -1620,9 +1622,10 @@ checkBalances s envOuter = Map.foldrWithKey (\ w sval p -> walletFundsChange w s
                 lookup st = case lookupMaybe st of
                   Nothing  -> error $ "Trying to look up unknown symbolic token: " ++ show st ++ ",\nare you using a custom implementation of getAllSymtokens? If not, please report this as a bug."
                   Just tok -> tok
-                dlt = toValue lookup sval
                 initialValue = fold (dist ^. at w)
+                dlt' = toValue lookup sval
                 finalValue = finalValue' P.+ fees
+                dlt = calculateDelta dlt' (Ada.fromValue initialValue) (Ada.fromValue finalValue) w ((w, concat walletTxOutCosts) : txOutCosts)
                 result = initialValue P.+ dlt == finalValue
             unless result $ do
                 tell @(Doc Void) $ vsep $
